@@ -1,3 +1,13 @@
+Array.prototype.concatMap = function(fn) {
+    let ret = [];
+    for(let ii = 0; ii < this.length; ii++) {
+        for(let v of fn(this[ii])) {
+            ret.push(v);
+        }
+    }
+    return ret;
+}
+
 let derive = (gmr) => R => gmr({
 
     tag: (t, g) => ({n,id,tags}) => 
@@ -15,7 +25,7 @@ let derive = (gmr) => R => gmr({
             R.seq(R.lit(l), r({n:n+1,id,tags}))),
 
 // (A -> ...A...) -> ([A] -> A | ...(A | [A])...)
-    fix: fn => ({n,id,tags}) =>R.alt(
+    fix: fn => ({n,id,tags}) => R.alt(
         R.lit(fn, {n:n+1, id, tags}),
         R.fix(regex => fn(({n,id,tags}) => R.alt(
             R.lit(fn, {n:n+1, id, tags}),
@@ -26,7 +36,7 @@ let derive = (gmr) => R => gmr({
 
 // the grammar itself is used as a unique identifer 
 // for the start symbol S.
-})({n:0,id:gmr,tags:[]})
+})({n:0,id:gmr,tags:null})
 
 let add_res = (res, next) => res ?
     plus({done: () => new Set([res]), next: () => new Set()}, next) :
@@ -77,51 +87,146 @@ let compile = (re) => re({
 })({done: () => new Set(), next: () => new Set()})
 
 let parse = (S, nfa, str, idx=0) => fns => {
-    let stack = [{nfa, v: []}]
-    let shift = () => {
+    let stacks = [
+        [{nfa, v: []}, null]
+    ];
+    let shift = (stack) => {
         let next = stack[0].nfa.next(str.charAt(idx))
-        if(next.size == 0) return false
-        stack.unshift({nfa: [...next].reduce(plus, zero), v: [{idx, ch: str.charAt(idx)}, stack[0].v]})
-        idx++
-        return true
+        if(next.size == 0) return [];
+        return [
+            [
+                {
+                    nfa: [...next].reduce(plus, zero),
+                    v: [{idx, ch: str.charAt(idx)}, stack[0].v]
+                },
+                stack
+            ]
+        ];
     }
-    let reduce = () => {
+    let reduce = (stack) => {
         let reductions = stack[0].nfa.done()
-        if(reductions.size == 0) return false
-        if(reductions.size > 1) throw "Reduce/Reduce conflict"
-        let {n, id, tags} = [...reductions][0]
-        let v = stack[0].v;
-        while(0 < n--) stack.shift()
-        
-        if(tags) {
-            let vsub = stack[0].v;
-            let args = [];
-            while(v !== vsub) {
-                args.unshift(v[0]);
-                v = v[1];
+        return [...reductions].map(({n,id,tags}) => {
+            let s = stack;
+            let v = stack[0].v;
+            while(0 < n--) s = s[1];
+
+            if(tags) {
+                let vsub = s[0].v;
+                let args = [];
+                while(v !== vsub) {
+                    args.unshift(v[0]);
+                    v = v[1];
+                }
+                for(let t = tags; t; t = t[1]) {
+                    args = [fns[t[0]]( ...args )];
+                }
+                v = [args[0], v];
             }
-            for(let t = tags; t; t = t[1]) {
-                args = [fns[t[0]]( ...args )];
-            }
-            v = [args[0], v];
+            return [
+                {
+                    nfa: [...s[0].nfa.next(id)].reduce(plus, zero),
+                    v
+                },
+                s
+            ];
+        });
+    }
+    function reduce_all() {
+        let wset = stacks;
+        while(wset.length) {
+            wset = wset.concatMap(reduce);
+            stacks = [...stacks, ...wset];
         }
-        stack.unshift({nfa: [...stack[0].nfa.next(id)].reduce(plus, zero), v})
-        return true
     }
     while(idx < str.length) {
-        if(!(shift() || reduce())) return false
+        reduce_all();
+        stacks = stacks.concatMap(shift);
+        idx++;
+        console.log("At index", idx, stacks.length);
+        if(!stacks.length) return false;
     }
-    do {
-        if([...stack[0].nfa.done()].some(
-            ({n,id}) => id == S && n == stack.length-1)) {
-            return stack[0].v;
-        }
-    } while(reduce())
-    return false;
+    reduce_all();
+    let results = stacks
+        .filter(stack => 
+                [...stack[0].nfa.done()].some(({id}) => id == S)
+               ).map(stack => stack[0].v);
+    return results;
 }
 
 module.exports = {parse, compile, derive};
 
+
+let gmr_gmr = ({fix, alt, seq, lit, eps, tag}) => {
+    function alts(arr) {
+        if(arr.length == 1) return arr[0];
+        if(arr.length == 2) return alt(arr[0], arr[1]);
+        let idx = Math.floor(arr.length / 2);
+        return alt(alts(arr.slice(0, idx)), alts(arr.slice(idx)));
+    }
+    let seqs = (...arr) => arr.reduce((l,r) => seq(l,r));
+    let many1 = (inner) => fix(m1 => tag('$arr', seq(inner, alt(eps(), m1))));
+    let many = (inner) => fix(m => alt(eps(), tag('$arr', seq(inner, m))));
+    let sepBy = (v, sep) => fix(lst => seq(v, alt(eps(), seq(sep, lst))));
+    let alpha = alts(
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'.split('').map(chr => lit(chr))
+    );
+    let ws = alts([lit(' '), lit('\t'), lit('\n')]);
+    let symbol = chr => seq(lit(chr), many(ws));
+    let colon = symbol(':');
+    let pipe = symbol('|');
+    let equal = symbol('=');
+    let star = symbol('*');
+    let plus = symbol('+');
+    let query = symbol('?');
+    let lparen = symbol('(');
+    let rparen = symbol(')');
+    let semi = symbol(';');
+
+    let idfer = seq(many1(alpha), many(ws));
+    let str = seqs(lit('"'), many(alpha), lit('"'), many(ws));
+    let range = seqs(lit('['), many(alpha), lit(']'), many(ws));
+
+    let postfix = alts([plus, query, star]);
+
+    let rhs = fix(rhs => {
+        let atom = alts([
+            tag('idfer', idfer),
+            tag('range', range),
+            tag('str', str),
+            tag('paren', seq(lparen, rhs, rparen))
+        ]);
+        let atomPost = tag('post', seq(atom, alt(eps(), postfix)));
+        let union = seqs(sepBy(atomPost, ws), many(seq(pipe, sepBy(atomPost, ws))));
+        let sum = seqs(idfer, colon, sepBy(atomPost, ws), many(seqs(pipe, idfer, colon, sepBy(atomPost, ws))));
+        return alt(tag("union", union), tag("sum", sum))
+    });
+
+    let defn = seqs(idfer, equal, rhs, semi);
+
+    return seqs(rhs, semi, many(defn));
+}
+
+let str1 = "str: \"abc\" chr* | idf: [abc] ; ";
+//let str1= "\"abc\" | foo*";
+
+let result = parse(gmr_gmr, 
+                   compile(derive(gmr_gmr)),
+                   str1)({
+                       post: (...args) => ['post', ...args],
+                       idfer: (...args) => ['idfer', ...args],
+                       range: (...args) => ['range', ...args],
+                       str: (...args) => ['str', ...args],
+                       paren: (...args) => ['paren', ...args],
+                       union: (...args) => ['union', ...args],
+                       sum: (...args) => ['sum', ...args],
+                       '$arr': (elem, arr) => [elem, ...(arr || [])]
+                   })
+console.log(
+    JSON.stringify(
+        result && result[0], null, 4
+    ));
+
+console.log("Results", result && result.length);
 /*
 
 let test_grammar = ({fix, alt, seq, lit, eps, tag}) =>
