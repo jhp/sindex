@@ -98,7 +98,8 @@ let parse = (S, nfa, str, idx=0) => fns => {
                 {
                     id: str.charAt(idx),
                     nfa: [...next].reduce(plus, zero),
-                    v: [{idx, ch: str.charAt(idx)}, stack[0].v]
+                    v: [str.charAt(idx), stack[0].v]
+                    //v: [{idx, ch: str.charAt(idx)}, stack[0].v]
                 },
                 stack
             ]
@@ -172,11 +173,18 @@ let gmr_gmr = ({fix, alt, seq, lit, eps, tag}) => {
         return alt(alts(arr.slice(0, idx)), alts(arr.slice(idx)));
     }
     let seqs = (...arr) => arr.reduce((l,r) => seq(l,r));
-    let many1 = (inner) => fix(m1 => tag('$arr', seq(inner, alt(eps(), m1))));
-    let many = (inner) => fix(m => alt(eps(), tag('$arr', seq(inner, m))));
+    let many1 = (inner) => fix(m1 => tag('$arr', seq(tag('$wrap', inner), alt(eps(), m1))));
+    let many = (inner) => fix(m => alt(eps(), tag('$arr', seq(tag('$wrap', inner), m))));
     let sepBy = (v, sep) => fix(lst => seq(v, alt(eps(), seq(sep, lst))));
     let alpha = alts(
         'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'.split('').map(chr => lit(chr))
+    );
+    let digit = alts(
+        '0123456789'.split('').map(chr => lit(chr))
+    );
+    // does not include \ or " or ]
+    let special = alts(
+        "`~!@#$%^&*()-_=+[{}|';:/?,<.>".split('').map(chr => lit(chr))
     );
     let ws = alts([lit(' '), lit('\t'), lit('\n')]);
     let symbol = chr => seq(lit(chr), many(ws));
@@ -190,9 +198,13 @@ let gmr_gmr = ({fix, alt, seq, lit, eps, tag}) => {
     let rparen = symbol(')');
     let semi = symbol(';');
 
-    let idfer = seq(many1(alpha), many(ws));
-    let str = seqs(lit('"'), many(alpha), lit('"'), many(ws));
-    let range = seqs(lit('['), many(alpha), lit(']'), many(ws));
+    let idfer = seqs(alpha, many(alt(alpha, digit)), many(ws));
+    let str = seqs(lit('"'),
+                   many(alts([alpha, digit, special, lit(']'), seq(lit('\\'), lit('\\')), seq(lit('\\'), lit('"'))])),
+                   lit('"'), many(ws));
+    let range = seqs(lit('['),
+                     many(alts([alpha, digit, special, lit('"'), seq(lit('\\'), lit('\\')), seq(lit('\\'), lit(']'))])),
+                     lit(']'), many(ws));
 
     let postfix = alts([plus, query, star]);
 
@@ -215,11 +227,15 @@ let gmr_gmr = ({fix, alt, seq, lit, eps, tag}) => {
 }
 
 let str1 = "str: \"abc\" chr* | idf: [abc] ; ";
+let str2 = `alpha: alpha | digit: digit;
+alpha = [abcdefghijklmnopqrstuvwxyz];
+digit = [0123456789];
+`;
 //let str1= "\"abc\" | foo*";
 
 let result = parse(gmr_gmr, 
                    compile(derive(gmr_gmr)),
-                   str1)({
+                   str2)({
                        post: (...args) => ['post', ...args],
                        idfer: (...args) => ['idfer', ...args],
                        range: (...args) => ['range', ...args],
@@ -227,11 +243,12 @@ let result = parse(gmr_gmr,
                        paren: (...args) => ['paren', ...args],
                        union: (...args) => ['union', ...args],
                        sum: (...args) => ['sum', ...args],
-                       '$arr': (elem, arr) => [elem, ...(arr || [])]
+                       '$arr': (elem, arr) => [elem, ...(arr || [])],
+                       '$wrap': (...elems) => elems.length === 1 ? elems[0] : [elems]
                    })
 console.log(
     JSON.stringify(
-        result && result[0], null, 4
+        result, null, 4
     ));
 
 console.log("Results", result && result.length);
