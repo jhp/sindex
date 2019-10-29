@@ -88,7 +88,7 @@ let compile = (re) => re({
 
 let parse = (S, nfa, str, idx=0) => fns => {
     let stacks = [
-        [{nfa, v: []}, null]
+        [{nfa, v: [], id: null}, null]
     ];
     let shift = (stack) => {
         let next = stack[0].nfa.next(str.charAt(idx))
@@ -96,6 +96,7 @@ let parse = (S, nfa, str, idx=0) => fns => {
         return [
             [
                 {
+                    id: str.charAt(idx),
                     nfa: [...next].reduce(plus, zero),
                     v: [{idx, ch: str.charAt(idx)}, stack[0].v]
                 },
@@ -124,6 +125,7 @@ let parse = (S, nfa, str, idx=0) => fns => {
             }
             return [
                 {
+                    id,
                     nfa: [...s[0].nfa.next(id)].reduce(plus, zero),
                     v
                 },
@@ -137,6 +139,12 @@ let parse = (S, nfa, str, idx=0) => fns => {
             wset = wset.concatMap(reduce);
             stacks = [...stacks, ...wset];
         }
+        let m = new Map();
+        for(let stack of stacks) {
+            if(!m.has(stack[0].id)) m.set(stack[0].id, new Map());
+            m.get(stack[0].id).set(stack[1], stack);
+        }
+        stacks = [...m.values()].concatMap(m => m.values());
     }
     while(idx < str.length) {
         reduce_all();
