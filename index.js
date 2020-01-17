@@ -8,12 +8,23 @@ Array.prototype.concatMap = function(fn) {
     return ret;
 }
 
+let tagIdMap = new Map();
+let tag_id = (t, g) => {
+    if(!tagIdMap.has(t)) {
+        tagIdMap.set(t, new Map());
+    }
+    if(!tagIdMap.get(t).has(g)) {
+        tagIdMap.get(t).set(g, {});
+    }
+    return tagIdMap.get(t).get(g);
+};
+
 let derive = (gmr) => R => gmr({
 
     tag: (t, g) => ({n,id,tags}) => 
         R.alt(
-            R.lit(g, {n:n+1, id, tags}),
-            g({n:0,id:g,tags: [t,null]})),
+            R.lit(tag_id(t, g), {n:n+1, id, tags}),
+            g({n:0,id:tag_id(t, g),tags: [t,null]})),
     
 // A | B -> [A] | [B]
     alt: (l,r) => ({n,id,tags}) =>
@@ -158,7 +169,6 @@ let parse = (S, nfa, str, idx=0) => {
         if(!stacks.length) return false;
     }
     reduce_all();
-    console.log("At index", idx, stacks.length);
     let results = stacks
         .map(stack => {
 	    let final = [...stack[0].nfa.done()].find(({id}) => id == S);
@@ -176,8 +186,6 @@ let parse = (S, nfa, str, idx=0) => {
         .filter(Boolean);
     return results;
 }
-
-module.exports = {parse, compile, derive};
 
 let gmr_gmr = ({fix, alt, seq, lit, eps, tag}) => {
     function $str(context, chrs) { return chrs.join(''); }
@@ -207,10 +215,14 @@ let gmr_gmr = ({fix, alt, seq, lit, eps, tag}) => {
         tag($arr, seq(
             tag($wrap, inner),
             m))));
-    let sepBy = (v, sep) => fix(
-        lst => tag($arr, seq(tag($wrap, v),
-                   alt(tag($nil, eps()),
-                       tag($arr, seq(tag($wrap, sep), lst))))));
+    let sepBy1 = (v, sep) => fix(
+        lst => tag($arr,
+                   seq(tag($wrap, v),
+                       alt(tag($nil, eps()),
+                           tag($arr, seq(tag($wrap, sep), lst))))));
+    let sepBy = (v, sep) => alt(
+        tag($nil, eps()),
+        sepBy1(v, sep))
     let alpha = alts(
         'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'.split('').map(chr => lit(chr))
     );
@@ -254,16 +266,13 @@ let gmr_gmr = ({fix, alt, seq, lit, eps, tag}) => {
             tag$('str', str),
             tag$('paren', tag((context, lp, x, rp) => x, seqs(lparen, rhs, rparen)))
         ]);
-        let atomPost = tag$('post', seq(atom, alt(eps(), postfix)));
         // TODO: add postfix back
-        atomPost = atom;
-        let union = tag((ctxt, u) => ctxt.union(u), tag($evens, sepBy(atomPost, pipe)));
-        let sum = tag(
-            (context, idfer, _colon, atomsHead, atomsTail) => context.sum([[idfer, atomsHead], ...atomsTail]),
-            seqs(idfer, colon, tag($evens, sepBy(atomPost, many1(ws))),
-                 many(tag(
-                     (context, _pipe, idfer, _colon, atoms) => [idfer, atoms],
-                     seqs(pipe, idfer, colon, tag($evens, sepBy(atomPost, many1(ws))))))));
+        let atomPost = tag$('post', seq(atom, alt(eps(), postfix)));
+        let union = tag((ctxt, u) => ctxt.union(u), tag($evens, sepBy1(atom, pipe)));
+        let sum = tag$('sum', tag($evens, sepBy1(
+            tag((ctxt, idfer, _colon, atoms) => [idfer, atoms],
+                seqs(idfer, colon, tag($evens, sepBy1(atom, many1(ws))))),
+            pipe)));
         return tag((ctxt, rhs, ws) => rhs, seq(alt(union, sum), many(ws)));
     });
                                 
@@ -300,23 +309,46 @@ let fns = ({
     top: (...args) => ['top', ...args]
 });
 
-fns = G => ({
-    post: null,
-    idfer: (name) => env => {
-        console.log(name, env);
-        return env[name](env)
-    },
-    range: (chrs) => env => chrs.split('').map(G.lit).reduce(G.alt),
-    str: (chrs) => env => chrs.split('').map(G.lit).reduce(G.seq),
-    paren: (inner) => env => inner(env),
-    union: (alts) => env => alts.map(alt => alt(env)).reduce(G.alt),
-    sum: (opts) => env => opts.map(([tag,atoms]) => G.tag((ctxt, ...args) => ctxt[tag](...args), atoms.map(atom => atom(env)).reduce(G.seq))).reduce(G.alt),
-    defn: (idfer, rhs) => ({[idfer]: env => G.fix(v => rhs({...env, [idfer]: () => v}))}),
-    top: (rhs, defns) => rhs( defns.reduce((l,r) => Object.assign({},l,r), {epsilon: () => G.eps()}) )
-});
 
-let parsed_gmr = G => results[0][0](fns(G));
+let parse_grammar = str => {
+    let results = parse(gmr_gmr,
+                        compile(derive(gmr_gmr)),
+                        str);
 
+    
+    let fns = G => ({
+        post: null,
+        idfer: (name) => env => env[name](env),
+        range: (chrs) => env => chrs.split('').map(G.lit).reduce(G.alt),
+        str: (chrs) => env => chrs.split('').map(G.lit).reduce(G.seq),
+        paren: (inner) => env => inner(env),
+        union: (alts) => env => alts.map(alt => alt(env)).reduce(G.alt),
+        sum: (opts) => env => opts.map(([tag,atoms]) => G.tag((ctxt, ...args) => ctxt[tag](...args), atoms.map(atom => atom(env)).reduce(G.seq))).reduce(G.alt),
+        defn: (idfer, rhs) => ({[idfer]: env => G.fix(v => rhs({...env, [idfer]: () => v}))}),
+        top: (rhs, defns) => rhs( defns.reduce((l,r) => Object.assign({},l,r), {epsilon: () => G.eps()}) )
+    });
+
+    let UNION = (l,r) => [...new Set([...l, ...r])];
+
+    let getNames = ({
+        post: null,
+        idfer: () => [],
+        range: () => [],
+        str: () => [],
+        paren: (inner) => inner,
+        union: (alts) =>  alts.reduce(UNION, []),
+        sum: (opts) => opts.map(([tag, atoms]) => atoms.reduce(UNION, [tag])).reduce(UNION, []),
+        defn: (idfer, rhs) => rhs,
+        top: (rhs, defns) => defns.reduce(UNION, rhs)
+    });
+
+    return {
+        g: G => results[0][0](fns(G)),
+        names: results[0][0](getNames)
+    };
+}
+
+/*
 results = parse(parsed_gmr,
                 compile(derive(parsed_gmr)),
                 'abcdghi');
@@ -329,3 +361,7 @@ console.log(
             gkl: (...args) => ['gkl', ...args]
         }), null, 4
     ));
+*/
+
+module.exports = {parse, compile, derive, parse_grammar};
+
