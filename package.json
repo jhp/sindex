@@ -1,6 +1,6 @@
 {
   "name": "sindex",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Parse from left to right",
   "main": "index.js",
   "scripts": {
